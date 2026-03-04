@@ -1,0 +1,46 @@
+<idea-plugin>
+    <id>io.github.mingovvv.endpoint-lens</id>
+    <name>Endpoint Lens</name>
+    <vendor email="mingovvv@gmail.com">mingovvv</vendor>
+    <description>
+        Endpoint Lens helps you understand Spring HTTP mappings in large projects.
+        It indexes controller endpoints, provides fast search/navigation, and warns about duplicate mappings before they cause runtime confusion.
+    </description>
+    <change-notes><![CDATA[
+      <p><b>1.0.0</b></p>
+      <ul>
+        <li>Initial release of Endpoint Lens.</li>
+        <li>Project-wide indexing of Spring HTTP endpoints.</li>
+        <li>Searchable endpoint navigation via tool window and popup action.</li>
+        <li>Duplicate endpoint inspection with IDE warnings.</li>
+      </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Endpoint Lens"
+                    anchor="right"
+                    factoryClass="mingovvv.endpointlens.idea.ui.HttpPathsToolWindowFactory"/>
+        <postStartupActivity implementation="mingovvv.endpointlens.idea.index.EndpointStartupActivity"/>
+        <localInspection language="any"
+                         shortName="HPS001DuplicateEndpoint"
+                         id="HPS001_DUPLICATE_ENDPOINT"
+                         displayName="Duplicate HTTP endpoint"
+                         groupName="Endpoint Lens"
+                         enabledByDefault="true"
+                         level="WARNING"
+                         implementationClass="mingovvv.endpointlens.idea.inspection.EndpointDuplicateInspection"/>
+    </extensions>
+
+    <actions>
+        <action id="EndpointLens.OpenHttpPathsPopup"
+                class="mingovvv.endpointlens.idea.ui.OpenHttpPathsPopupAction"
+                text="Open Endpoint Lens Popup"
+                description="Open Endpoint Lens search popup">
+            <add-to-group group-id="MainMenu" anchor="last"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt H"/>
+        </action>
+    </actions>
+</idea-plugin>
