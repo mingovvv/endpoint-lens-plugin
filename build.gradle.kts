@@ -3,8 +3,8 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.2.1"
 }
 
-group = "mingovvv"
-version = "1.0-SNAPSHOT"
+group = "io.github.mingovvv"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -16,7 +16,8 @@ repositories {
 dependencies {
     testImplementation(kotlin("test"))
     intellijPlatform {
-        intellijIdeaCommunity("2025.2.2")
+        // Build against the lowest platform we want to support (wider compatibility range).
+        intellijIdeaCommunity("2024.2")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
 }
@@ -25,22 +26,24 @@ tasks.test {
     useJUnitPlatform()
 }
 
+sourceSets {
+    main {
+        kotlin.srcDir("src/main/io")
+    }
+}
+
 intellijPlatform {
     pluginConfiguration {
-        id = "mingovvv.endpoint-lens"
+        id = "io.github.mingovvv.endpoint-lens"
         name = "Endpoint Lens"
         version = project.version.toString()
 
         ideaVersion {
-            sinceBuild = "252"
+            // 2024.2 (branch 242) to 2025.2 (branch 252)
+            sinceBuild = "242"
+            untilBuild = "252.*"
         }
     }
-}
-
-tasks.register("runId") {
-    group = "run"
-    description = "Alias for runIde"
-    dependsOn("runIde")
 }
 
 tasks.named<org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask>("runIde") {
