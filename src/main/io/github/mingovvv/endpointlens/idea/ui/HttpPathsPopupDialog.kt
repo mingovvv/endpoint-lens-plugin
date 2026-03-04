@@ -11,6 +11,7 @@ class HttpPathsPopupDialog(project: Project) : DialogWrapper(project) {
     init {
         title = "Endpoint Lens"
         setResizable(true)
+        panel.onNavigate = { close(0) }
         init()
     }
 
@@ -20,5 +21,5 @@ class HttpPathsPopupDialog(project: Project) : DialogWrapper(project) {
 
     override fun createActions() = emptyArray<javax.swing.Action>()
 
-    override fun getInitialSize(): Dimension = Dimension(1050, 700)
+    override fun getInitialSize(): Dimension = Dimension(820, 660)
 }

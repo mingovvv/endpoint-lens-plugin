@@ -1,7 +1,12 @@
 <svg width="13" height="13" viewBox="0 0 13 13" xmlns="http://www.w3.org/2000/svg">
-  <g fill="#AFB1B3" fill-rule="evenodd">
-    <path d="M2 2h6v1H3v5H2z"/>
-    <path d="M4 4h7v7H4zM5 5v5h5V5z"/>
-    <path d="M1.5 11.5l2.4-2.4.7.7-2.4 2.4z"/>
+  <g fill="none" stroke="#AFB1B3" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Magnifying glass circle -->
+    <circle cx="5.8" cy="5.8" r="3.8" stroke-width="1.1"/>
+    <!-- Handle -->
+    <line x1="8.5" y1="8.5" x2="11.2" y2="11.2" stroke-width="1.1"/>
+    <!-- { -->
+    <path d="M5.1 4.0C4.5 4.0 4.2 4.3 4.2 4.8L4.2 5.3C4.2 5.6 3.9 5.8 3.4 5.8C3.9 5.8 4.2 6.1 4.2 6.4L4.2 6.9C4.2 7.4 4.5 7.7 5.1 7.7" stroke-width="0.8"/>
+    <!-- } -->
+    <path d="M6.6 4.0C7.2 4.0 7.5 4.3 7.5 4.8L7.5 5.3C7.5 5.6 7.8 5.8 8.3 5.8C7.8 5.8 7.5 6.1 7.5 6.4L7.5 6.9C7.5 7.4 7.2 7.7 6.6 7.7" stroke-width="0.8"/>
   </g>
 </svg>

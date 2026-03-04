@@ -7,6 +7,17 @@
         It indexes controller endpoints, provides fast search/navigation, and warns about duplicate mappings before they cause runtime confusion.
     </description>
     <change-notes><![CDATA[
+      <p><b>1.1.0</b></p>
+      <ul>
+        <li>Added Response JSON Structure preview panel — instantly see the response shape of any selected endpoint.</li>
+        <li>Improved search UX: dedicated search field with magnifier icon and one-click clear button.</li>
+        <li>Enhanced search highlight with high-visibility yellow markers for matched tokens.</li>
+        <li>Redesigned filter layout — Method and Module filters on the first row, Controller on the second row, all column-aligned.</li>
+        <li>Popup now closes automatically when navigating to an endpoint via Enter or double-click.</li>
+        <li>Location display in search results now shows only filename and line number for cleaner readability.</li>
+        <li>Endpoint count status label added below filters showing how many results are visible.</li>
+        <li>Updated tool window icon to match the plugin's visual identity.</li>
+      </ul>
       <p><b>1.0.0</b></p>
       <ul>
         <li>Initial release of Endpoint Lens.</li>

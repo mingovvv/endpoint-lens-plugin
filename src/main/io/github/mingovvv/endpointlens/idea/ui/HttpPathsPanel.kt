@@ -4,7 +4,9 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.ui.DocumentAdapter
@@ -14,14 +16,19 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTextField
+import com.intellij.ui.SearchTextField
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
+import java.awt.Insets
 import java.awt.datatransfer.StringSelection
+import java.awt.event.HierarchyEvent
+import java.awt.event.HierarchyListener
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -36,7 +43,6 @@ import javax.swing.JPanel
 import javax.swing.JSplitPane
 import javax.swing.JTextArea
 import javax.swing.JPopupMenu
-import javax.swing.JButton
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
@@ -52,13 +58,19 @@ import mingovvv.endpointlens.idea.search.EndpointSearchQuery
 import mingovvv.endpointlens.idea.search.EndpointSearchService
 
 class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
-    private val searchField = JBTextField()
+    var onNavigate: (() -> Unit)? = null
+    private val searchField = SearchTextField(false)
     private val methodFilter = JComboBox<String>()
     private val moduleFilter = JComboBox<String>()
     private val controllerFilter = JComboBox<String>()
     private val listModel = DefaultListModel<IndexedEndpoint>()
     private val resultList = JBList(listModel)
-    private val statusLabel = JBLabel("Indexing...")
+    private val statusLabel = JBLabel("Scanning…").also {
+        it.horizontalAlignment = JLabel.RIGHT
+        it.foreground = JBColor.GRAY
+        it.font = it.font.deriveFont(it.font.size2D - 1f)
+        it.border = JBUI.Borders.empty(4, 0, 6, 0)
+    }
     private val responsePreviewArea = JTextArea()
 
     private val searchService = EndpointSearchService(project)
@@ -74,17 +86,24 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         border = JBUI.Borders.empty(8)
         add(buildFiltersPanel(), BorderLayout.NORTH)
         add(buildCenterPanel(), BorderLayout.CENTER)
-        add(statusLabel, BorderLayout.SOUTH)
         setupList()
         refreshFilters()
         refreshResults()
         bindEvents()
         subscribeIndexUpdate()
         ApplicationManager.getApplication().invokeLater {
-            // Popup first paint can miss initial preview generation; run one more pass after layout is ready.
             refreshResults()
             updateResponsePreview()
         }
+        addHierarchyListener(object : HierarchyListener {
+            private var firstShow = true
+            override fun hierarchyChanged(e: HierarchyEvent) {
+                if (firstShow && (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong()) != 0L && isShowing) {
+                    firstShow = false
+                    ApplicationManager.getApplication().invokeLater { updateResponsePreview() }
+                }
+            }
+        })
     }
 
     override fun removeNotify() {
@@ -96,31 +115,40 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun buildFiltersPanel(): JPanel {
-        val panel = JPanel(BorderLayout(JBUI.scale(8), JBUI.scale(8)))
-        val top = JPanel(BorderLayout())
-        top.add(JBLabel("HTTP Endpoint Search"), BorderLayout.WEST)
-        top.add(searchField, BorderLayout.CENTER)
-        searchField.toolTipText = "example: GET /users, /orders/{id}, users"
+        val panel = JPanel(BorderLayout(0, JBUI.scale(6)))
 
-        val filters = JPanel(BorderLayout(JBUI.scale(8), 0))
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
-        left.add(JBLabel("Method"))
-        left.add(methodFilter)
-        left.add(JBLabel("Module"))
-        left.add(moduleFilter)
+        val titleLabel = JBLabel("Endpoint Search")
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
 
-        val controllerPanel = JPanel(BorderLayout(JBUI.scale(6), 0))
-        controllerPanel.add(JBLabel("Controller"), BorderLayout.WEST)
-        controllerPanel.add(controllerFilter, BorderLayout.CENTER)
+        searchField.textEditor.toolTipText = "example: GET /users, /orders/{id}, users"
+
+        val searchRow = JPanel(BorderLayout(0, JBUI.scale(4)))
+        searchRow.add(titleLabel, BorderLayout.NORTH)
+        searchRow.add(searchField, BorderLayout.CENTER)
 
         methodFilter.preferredSize = JBUI.size(95, methodFilter.preferredSize.height)
         moduleFilter.preferredSize = JBUI.size(140, moduleFilter.preferredSize.height)
 
-        filters.add(left, BorderLayout.WEST)
-        filters.add(controllerPanel, BorderLayout.CENTER)
+        val pad = JBUI.scale(4)
+        val filters = JPanel(GridBagLayout())
+        val gc = GridBagConstraints().apply { fill = GridBagConstraints.HORIZONTAL; anchor = GridBagConstraints.WEST }
 
-        panel.add(top, BorderLayout.NORTH)
-        panel.add(filters, BorderLayout.SOUTH)
+        // Row 0: Method label | Method combo | Module label | Module combo
+        gc.gridx = 0; gc.gridy = 0; gc.weightx = 0.0; gc.insets = Insets(0, 0, pad, JBUI.scale(4)); filters.add(JBLabel("Method"), gc)
+        gc.gridx = 1; gc.gridy = 0; gc.weightx = 0.0; gc.insets = Insets(0, 0, pad, JBUI.scale(12)); filters.add(methodFilter, gc)
+        gc.gridx = 2; gc.gridy = 0; gc.weightx = 0.0; gc.insets = Insets(0, 0, pad, JBUI.scale(4)); filters.add(JBLabel("Module"), gc)
+        gc.gridx = 3; gc.gridy = 0; gc.weightx = 1.0; gc.insets = Insets(0, 0, pad, 0); filters.add(moduleFilter, gc)
+
+        // Row 1: Controller label | Controller combo (spans remaining)
+        gc.gridx = 0; gc.gridy = 1; gc.weightx = 0.0; gc.gridwidth = 1; gc.insets = Insets(0, 0, 0, JBUI.scale(4)); filters.add(JBLabel("Controller"), gc)
+        gc.gridx = 1; gc.gridy = 1; gc.weightx = 1.0; gc.gridwidth = 3; gc.insets = Insets(0, 0, 0, 0); filters.add(controllerFilter, gc)
+
+        val bottom = JPanel(BorderLayout())
+        bottom.add(filters, BorderLayout.CENTER)
+        bottom.add(statusLabel, BorderLayout.SOUTH)
+
+        panel.add(searchRow, BorderLayout.NORTH)
+        panel.add(bottom, BorderLayout.SOUTH)
         return panel
     }
 
@@ -144,12 +172,14 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun buildCenterPanel(): JPanel {
         val panel = JPanel(BorderLayout(JBUI.scale(0), JBUI.scale(8)))
-        val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, JBScrollPane(resultList), buildResponsePreviewPanel())
+        val listScroll = JBScrollPane(resultList)
+        listScroll.border = JBUI.Borders.compound(JBUI.Borders.emptyBottom(JBUI.scale(6)), listScroll.border)
+        val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, listScroll, buildResponsePreviewPanel())
         split.resizeWeight = 0.68
-        split.dividerSize = JBUI.scale(8)
+        split.dividerSize = JBUI.scale(3)
         split.isContinuousLayout = true
         split.border = JBUI.Borders.empty()
-        val divider = JBColor(Color(0xE5E7EB), Color(0x3A3D40))
+        val divider = JBColor(Color(0xC4C8CE), Color(0x4D5157))
         split.background = divider
         (split.ui as? BasicSplitPaneUI)?.divider?.apply {
             border = JBUI.Borders.empty()
@@ -164,20 +194,12 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun buildResponsePreviewPanel(): JPanel {
         val panel = JPanel(BorderLayout(JBUI.scale(0), JBUI.scale(6)))
-        panel.border = JBUI.Borders.emptyTop(2)
-        val header = JPanel(BorderLayout())
+        panel.border = JBUI.Borders.emptyTop(JBUI.scale(6))
+
         val title = JBLabel("Response JSON Structure")
         title.font = title.font.deriveFont(Font.BOLD)
-        val copyButton = JButton("Copy JSON")
-        copyButton.toolTipText = "Copy response JSON"
-        copyButton.margin = JBUI.insets(2, 8)
-        copyButton.addActionListener {
-            copyToClipboard(responsePreviewArea.text.ifBlank { "{}" })
-        }
-        header.isOpaque = false
-        header.border = JBUI.Borders.empty(0, 2)
-        header.add(title, BorderLayout.WEST)
-        header.add(copyButton, BorderLayout.EAST)
+        title.border = JBUI.Borders.emptyLeft(2)
+        panel.add(title, BorderLayout.NORTH)
 
         responsePreviewArea.isEditable = false
         responsePreviewArea.lineWrap = false
@@ -190,16 +212,16 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         val previewScroll = JBScrollPane(responsePreviewArea)
         previewScroll.preferredSize = JBUI.size(-1, 180)
         previewScroll.border = JBUI.Borders.customLine(JBColor(Color(0xE5E7EB), Color(0x3A3D40)))
-        panel.add(header, BorderLayout.NORTH)
+
         panel.add(previewScroll, BorderLayout.CENTER)
         return panel
     }
 
     private fun bindEvents() {
-        searchField.document.addDocumentListener(object : DocumentAdapter() {
+        searchField.textEditor.document.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) { refreshResults() }
         })
-        searchField.addKeyListener(object : KeyAdapter() {
+        searchField.textEditor.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 when (e.keyCode) {
                     KeyEvent.VK_DOWN -> { moveSelection(1); e.consume() }
@@ -281,9 +303,9 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         val total = indexService.getAll().size
         val lastError = indexService.getLastError()
         statusLabel.text = when {
-            indexService.isIndexing() -> "Indexing... ${results.size} shown"
-            !lastError.isNullOrBlank() -> "Index failed: $lastError"
-            else -> "Indexed $total endpoints | Showing ${results.size}"
+            indexService.isIndexing() -> "Scanning…"
+            !lastError.isNullOrBlank() -> "⚠ ${lastError}"
+            else -> "Showing ${results.size} of $total endpoints"
         }
         if (resultList.selectedIndex < 0 && listModel.size > 0) {
             resultList.selectedIndex = 0
@@ -294,6 +316,7 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun navigateToSelected() {
         val selected = resultList.selectedValue ?: return
         val file = LocalFileSystem.getInstance().findFileByPath(selected.endpoint.sourceFile) ?: return
+        onNavigate?.invoke()
         OpenFileDescriptor(project, file, (selected.endpoint.line - 1).coerceAtLeast(0), 0).navigate(true)
     }
 
@@ -377,22 +400,20 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
                 ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
             }
 
-            ApplicationManager.getApplication().invokeLater {
+            ApplicationManager.getApplication().invokeLater({
                 if (ticket != previewRequestSeq.get()) return@invokeLater
                 responsePreviewArea.text = generated
                 responsePreviewArea.caretPosition = 0
-            }
+            }, ModalityState.any())
         }
     }
 
     private fun displaySource(sourceFile: String, line: Int): String {
-        val normalized = sourceFile.replace('\\', '/')
-        val srcIdx = normalized.indexOf("/src/")
-        val compact = if (srcIdx >= 0) normalized.substring(srcIdx + 1) else normalized.substringAfterLast('/')
-        return "$compact:$line"
+        val filename = sourceFile.replace('\\', '/').substringAfterLast('/')
+        return "$filename:$line"
     }
 
-    fun preferredFocusComponent() = searchField
+    fun preferredFocusComponent() = searchField.textEditor
 
     // Keep highlight rendering HTML-free to avoid BasicHTML freeze regressions.
     private fun currentHighlightTokens(): List<String> {
@@ -503,15 +524,17 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             val locationColor = if (isSelected) list.selectionForeground else JBColor.GRAY
             val normalPath = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, pathColor)
             val normalLocation = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, locationColor)
+            val highlightBg = JBColor(Color(0xFFD600), Color(0x7A5C00))
+            val highlightFg = JBColor(Color(0x1A1A00), Color(0xFFE082))
             val highlightPath = if (isSelected) {
-                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, pathColor)
+                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD or SimpleTextAttributes.STYLE_UNDERLINE, pathColor)
             } else {
-                SimpleTextAttributes(JBColor(Color(255, 244, 200), Color(72, 62, 25)), pathColor, null, SimpleTextAttributes.STYLE_BOLD)
+                SimpleTextAttributes(highlightBg, highlightFg, null, SimpleTextAttributes.STYLE_BOLD)
             }
             val highlightLocation = if (isSelected) {
-                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, locationColor)
+                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD or SimpleTextAttributes.STYLE_UNDERLINE, locationColor)
             } else {
-                SimpleTextAttributes(JBColor(Color(255, 244, 200), Color(72, 62, 25)), locationColor, null, SimpleTextAttributes.STYLE_BOLD)
+                SimpleTextAttributes(highlightBg, highlightFg, null, SimpleTextAttributes.STYLE_BOLD)
             }
 
             pathText.clear()
