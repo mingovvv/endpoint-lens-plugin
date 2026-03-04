@@ -6,6 +6,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleColoredComponent
@@ -32,14 +33,21 @@ import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JSplitPane
+import javax.swing.JTextArea
 import javax.swing.JPopupMenu
+import javax.swing.JButton
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
+import javax.swing.plaf.basic.BasicSplitPaneUI
+import java.util.concurrent.atomic.AtomicInteger
 import mingovvv.endpointlens.core.index.DuplicateEndpointDetector
 import mingovvv.endpointlens.idea.index.EndpointIndexListener
 import mingovvv.endpointlens.idea.index.EndpointProjectIndexService
 import mingovvv.endpointlens.idea.index.IndexedEndpoint
+import mingovvv.endpointlens.idea.preview.EndpointStructurePreviewService
+import mingovvv.endpointlens.idea.preview.ResponseJsonExampleGenerator
 import mingovvv.endpointlens.idea.search.EndpointSearchQuery
 import mingovvv.endpointlens.idea.search.EndpointSearchService
 
@@ -51,24 +59,32 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val listModel = DefaultListModel<IndexedEndpoint>()
     private val resultList = JBList(listModel)
     private val statusLabel = JBLabel("Indexing...")
+    private val responsePreviewArea = JTextArea()
 
     private val searchService = EndpointSearchService(project)
     private val indexService = EndpointProjectIndexService.getInstance(project)
+    private val previewService = EndpointStructurePreviewService(project)
     private var busConnection = project.messageBus.connect()
     private var disconnected = false
     private var suppressRefresh = false
     private var highlightTokens: List<String> = emptyList()
+    private val previewRequestSeq = AtomicInteger(0)
 
     init {
         border = JBUI.Borders.empty(8)
         add(buildFiltersPanel(), BorderLayout.NORTH)
-        add(JBScrollPane(resultList), BorderLayout.CENTER)
+        add(buildCenterPanel(), BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
         setupList()
         refreshFilters()
         refreshResults()
         bindEvents()
         subscribeIndexUpdate()
+        ApplicationManager.getApplication().invokeLater {
+            // Popup first paint can miss initial preview generation; run one more pass after layout is ready.
+            refreshResults()
+            updateResponsePreview()
+        }
     }
 
     override fun removeNotify() {
@@ -111,8 +127,11 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun setupList() {
         resultList.selectionMode = ListSelectionModel.SINGLE_SELECTION
         resultList.emptyText.text = "No endpoints found"
-        resultList.fixedCellHeight = JBUI.scale(46)
+        resultList.fixedCellHeight = JBUI.scale(64)
         resultList.cellRenderer = EndpointCellRenderer()
+        resultList.addListSelectionListener {
+            if (!it.valueIsAdjusting) updateResponsePreview()
+        }
         resultList.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2 && e.button == MouseEvent.BUTTON1) navigateToSelected()
@@ -121,6 +140,59 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             override fun mousePressed(e: MouseEvent) { if (e.isPopupTrigger) showPopup(e) }
             override fun mouseReleased(e: MouseEvent) { if (e.isPopupTrigger) showPopup(e) }
         })
+    }
+
+    private fun buildCenterPanel(): JPanel {
+        val panel = JPanel(BorderLayout(JBUI.scale(0), JBUI.scale(8)))
+        val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, JBScrollPane(resultList), buildResponsePreviewPanel())
+        split.resizeWeight = 0.68
+        split.dividerSize = JBUI.scale(8)
+        split.isContinuousLayout = true
+        split.border = JBUI.Borders.empty()
+        val divider = JBColor(Color(0xE5E7EB), Color(0x3A3D40))
+        split.background = divider
+        (split.ui as? BasicSplitPaneUI)?.divider?.apply {
+            border = JBUI.Borders.empty()
+            background = divider
+        }
+        ApplicationManager.getApplication().invokeLater {
+            split.setDividerLocation(0.68)
+        }
+        panel.add(split, BorderLayout.CENTER)
+        return panel
+    }
+
+    private fun buildResponsePreviewPanel(): JPanel {
+        val panel = JPanel(BorderLayout(JBUI.scale(0), JBUI.scale(6)))
+        panel.border = JBUI.Borders.emptyTop(2)
+        val header = JPanel(BorderLayout())
+        val title = JBLabel("Response JSON Structure")
+        title.font = title.font.deriveFont(Font.BOLD)
+        val copyButton = JButton("Copy JSON")
+        copyButton.toolTipText = "Copy response JSON"
+        copyButton.margin = JBUI.insets(2, 8)
+        copyButton.addActionListener {
+            copyToClipboard(responsePreviewArea.text.ifBlank { "{}" })
+        }
+        header.isOpaque = false
+        header.border = JBUI.Borders.empty(0, 2)
+        header.add(title, BorderLayout.WEST)
+        header.add(copyButton, BorderLayout.EAST)
+
+        responsePreviewArea.isEditable = false
+        responsePreviewArea.lineWrap = false
+        responsePreviewArea.wrapStyleWord = false
+        responsePreviewArea.font = Font(Font.MONOSPACED, Font.PLAIN, responsePreviewArea.font.size)
+        responsePreviewArea.text = "{\n  \"select\": \"endpoint\"\n}"
+        responsePreviewArea.border = JBUI.Borders.empty(6, 8)
+        responsePreviewArea.background = JBColor(Color(0xF8FAFC), Color(0x2F3136))
+
+        val previewScroll = JBScrollPane(responsePreviewArea)
+        previewScroll.preferredSize = JBUI.size(-1, 180)
+        previewScroll.border = JBUI.Borders.customLine(JBColor(Color(0xE5E7EB), Color(0x3A3D40)))
+        panel.add(header, BorderLayout.NORTH)
+        panel.add(previewScroll, BorderLayout.CENTER)
+        return panel
     }
 
     private fun bindEvents() {
@@ -216,6 +288,7 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (resultList.selectedIndex < 0 && listModel.size > 0) {
             resultList.selectedIndex = 0
         }
+        updateResponsePreview()
     }
 
     private fun navigateToSelected() {
@@ -254,6 +327,14 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         popup.add(copyCurl)
 
+        val copyResponseJson = JMenuItem("Copy response JSON example")
+        copyResponseJson.addActionListener {
+            copyToClipboard(responsePreviewArea.text.ifBlank {
+                ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
+            })
+        }
+        popup.add(copyResponseJson)
+
         val showDuplicates = JMenuItem("Show duplicates")
         showDuplicates.addActionListener {
             val key = DuplicateEndpointDetector.keyOf(selected.endpoint)
@@ -272,6 +353,36 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun copyToClipboard(text: String) {
         CopyPasteManager.getInstance().setContents(StringSelection(text))
+    }
+
+    private fun updateResponsePreview() {
+        val selected = resultList.selectedValue
+        if (selected == null) {
+            responsePreviewArea.text = "{\n  \"select\": \"endpoint\"\n}"
+            return
+        }
+
+        val ticket = previewRequestSeq.incrementAndGet()
+        responsePreviewArea.text = ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
+
+        AppExecutorUtil.getAppExecutorService().submit {
+            val generated = runCatching {
+                val preview = previewService.build(selected.endpoint)
+                if (preview.response != null) {
+                    ResponseJsonExampleGenerator.generateFromNode(preview.response)
+                } else {
+                    ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
+                }
+            }.getOrElse {
+                ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
+            }
+
+            ApplicationManager.getApplication().invokeLater {
+                if (ticket != previewRequestSeq.get()) return@invokeLater
+                responsePreviewArea.text = generated
+                responsePreviewArea.caretPosition = 0
+            }
+        }
     }
 
     private fun displaySource(sourceFile: String, line: Int): String {
@@ -336,8 +447,10 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private inner class EndpointCellRenderer : ListCellRenderer<IndexedEndpoint> {
         private val outerPanel = JPanel(BorderLayout())
         private val topPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
+        private val metaPanel = JPanel(BorderLayout(JBUI.scale(6), 0))
         private val methodLabel = JLabel()
         private val pathText = SimpleColoredComponent()
+        private val responseText = SimpleColoredComponent()
         private val locationText = SimpleColoredComponent()
         private val boldFont: Font
         private val smallFont: Font
@@ -349,14 +462,18 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
             methodLabel.font = boldFont
             pathText.font = base
+            responseText.font = smallFont
             locationText.font = smallFont
 
             topPanel.isOpaque = false
+            metaPanel.isOpaque = false
             topPanel.add(methodLabel)
             topPanel.add(pathText)
+            metaPanel.add(responseText, BorderLayout.WEST)
+            metaPanel.add(locationText, BorderLayout.EAST)
 
             outerPanel.add(topPanel, BorderLayout.CENTER)
-            outerPanel.add(locationText, BorderLayout.SOUTH)
+            outerPanel.add(metaPanel, BorderLayout.SOUTH)
             outerPanel.border = JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 0, 0, 1, 0),
                 JBUI.Borders.empty(4, 8)
@@ -373,6 +490,7 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             if (value == null) {
                 methodLabel.text = ""
                 pathText.clear()
+                responseText.clear()
                 locationText.clear()
                 return outerPanel
             }
@@ -399,6 +517,16 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             pathText.clear()
             appendHighlighted(pathText, value.endpoint.fullPath, highlightTokens, normalPath, highlightPath)
 
+            val responsePrefixAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, locationColor)
+            val responseValueAttr = if (isSelected) {
+                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, locationColor)
+            } else {
+                SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor(Color(0x0D47A1), Color(0x90CAF9)))
+            }
+            responseText.clear()
+            responseText.append("Response ", responsePrefixAttr)
+            responseText.append(compactType(value.endpoint.responseType), responseValueAttr)
+
             locationText.clear()
             appendHighlighted(
                 locationText,
@@ -411,12 +539,25 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             val bg = if (isSelected) list.selectionBackground else list.background
             outerPanel.background = bg
             topPanel.background = bg
+            metaPanel.background = bg
             outerPanel.isOpaque = true
             topPanel.isOpaque = true
+            metaPanel.isOpaque = true
             pathText.isOpaque = false
+            responseText.isOpaque = false
             locationText.isOpaque = false
 
             return outerPanel
+        }
+
+        private fun compactType(type: String?): String {
+            val raw = type?.trim().orEmpty()
+            if (raw.isBlank()) return "Unknown"
+            val cleaned = raw
+                .replace("kotlin.", "")
+                .replace("java.lang.", "")
+                .replace("java.util.", "")
+            return if (cleaned.length <= 52) cleaned else cleaned.take(49) + "..."
         }
 
         private fun methodColor(method: String): Color = when (method) {

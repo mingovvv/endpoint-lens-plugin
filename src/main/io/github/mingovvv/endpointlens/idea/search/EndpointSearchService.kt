@@ -49,7 +49,9 @@ class EndpointSearchService(private val project: Project) {
 
     private fun matchPath(item: IndexedEndpoint, query: EndpointSearchQuery): Boolean {
         val token = query.pathToken ?: return true
-        return item.endpoint.fullPath.lowercase().contains(token)
+        val path = normalizePathForMatch(item.endpoint.fullPath)
+        val needle = normalizePathForMatch(token)
+        return path.contains(needle)
     }
 
     private fun matchText(item: IndexedEndpoint, query: EndpointSearchQuery): Boolean {
@@ -61,8 +63,19 @@ class EndpointSearchService(private val project: Project) {
             append(' ')
             append(item.endpoint.methodName.lowercase())
             append(' ')
+            append(item.endpoint.responseType.orEmpty().lowercase())
+            append(' ')
             append(item.moduleName.lowercase())
         }
         return query.textTokens.all { haystack.contains(it) }
+    }
+
+    private fun normalizePathForMatch(raw: String): String {
+        return raw.lowercase()
+            .replace('\\', '/')
+            .replace(Regex("/+"), "/")
+            .trim()
+            .removeSuffix("/")
+            .let { if (it.isEmpty()) "/" else it }
     }
 }

@@ -5,6 +5,7 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.concurrency.AppExecutorUtil
@@ -73,14 +74,13 @@ class EndpointProjectIndexService(private val project: Project) {
     fun getLastError(): String? = lastError
 
     private fun reindexAll() {
-        val supportedFiles = ReadAction.compute<List<VirtualFile>, RuntimeException> {
-            val result = mutableListOf<VirtualFile>()
-            ProjectFileIndex.getInstance(project).iterateContent { file ->
-                if (isSupportedFile(file)) result.add(file)
-                true
-            }
-            result
+        val supportedFiles = collectSupportedFiles()
+        if (supportedFiles.isEmpty()) {
+            byFilePath.clear()
+            lastError = "No Kotlin/Java files found in project scope"
+            return
         }
+
         val next = mutableMapOf<String, List<IndexedEndpoint>>()
         for (file in supportedFiles) {
             val records = extractFromFile(file)
@@ -90,6 +90,44 @@ class EndpointProjectIndexService(private val project: Project) {
         }
         byFilePath.clear()
         byFilePath.putAll(next)
+    }
+
+    private fun collectSupportedFiles(): List<VirtualFile> {
+        val fromProjectIndex = ReadAction.compute<List<VirtualFile>, RuntimeException> {
+            val result = mutableListOf<VirtualFile>()
+            ProjectFileIndex.getInstance(project).iterateContent { file ->
+                if (isSupportedFile(file)) result.add(file)
+                true
+            }
+            result
+        }
+        if (fromProjectIndex.isNotEmpty()) return fromProjectIndex
+
+        // Fallback: if project model/content roots are not ready, scan from project base directory.
+        return ReadAction.compute<List<VirtualFile>, RuntimeException> {
+            val basePath = project.basePath ?: return@compute emptyList()
+            val baseDir = LocalFileSystem.getInstance().findFileByPath(basePath) ?: return@compute emptyList()
+            val result = mutableListOf<VirtualFile>()
+
+            VfsUtilCore.iterateChildrenRecursively(
+                baseDir,
+                { file ->
+                    if (!file.isValid) return@iterateChildrenRecursively false
+                    val normalized = file.path.replace('\\', '/')
+                    !normalized.contains("/.git/") &&
+                        !normalized.contains("/.gradle/") &&
+                        !normalized.contains("/build/") &&
+                        !normalized.contains("/out/")
+                },
+                { file ->
+                    if (!file.isDirectory && isSupportedFile(file)) {
+                        result += file
+                    }
+                    true
+                }
+            )
+            result
+        }
     }
 
     private fun refreshFile(file: VirtualFile) {
@@ -102,6 +140,9 @@ class EndpointProjectIndexService(private val project: Project) {
             byFilePath.remove(file.path)
         } else {
             byFilePath[file.path] = records
+            if (!lastError.isNullOrBlank() && lastError!!.startsWith("No Kotlin/Java files found")) {
+                lastError = null
+            }
         }
     }
 
@@ -114,22 +155,11 @@ class EndpointProjectIndexService(private val project: Project) {
         }
 
         if (source.isBlank()) return emptyList()
-        // 매핑 어노테이션이 없는 파일은 빠르게 스킵
-        if (!mightContainEndpoints(source)) return emptyList()
 
         // 파싱은 read lock 밖에서 수행 (CPU 작업이므로 lock 불필요)
         return extractor.extractFromSource(source, file.path).map { endpoint ->
             IndexedEndpoint(endpoint = endpoint, moduleName = moduleName)
         }
-    }
-
-    private fun mightContainEndpoints(source: String): Boolean {
-        return source.contains("@RequestMapping") ||
-            source.contains("@GetMapping") ||
-            source.contains("@PostMapping") ||
-            source.contains("@PutMapping") ||
-            source.contains("@PatchMapping") ||
-            source.contains("@DeleteMapping")
     }
 
     private fun publishUpdated() {

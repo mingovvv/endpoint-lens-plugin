@@ -11,6 +11,7 @@ data class HttpEndpoint(
     val fullPath: String,
     val controllerFqn: String,
     val methodName: String,
+    val responseType: String? = null,
     val sourceFile: String,
     val line: Int,
     val consumes: List<String> = emptyList(),
@@ -25,4 +26,3 @@ data class EndpointDuplicate(
     val key: String,
     val endpoints: List<HttpEndpoint>
 )
-

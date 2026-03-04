@@ -12,8 +12,8 @@ import mingovvv.endpointlens.idea.preview.model.EndpointStructurePreview
 import mingovvv.endpointlens.idea.preview.model.StructureNode
 
 class EndpointStructurePreviewService(private val project: Project) {
-    private val maxDepth = 3
-    private val typeFileCache = ConcurrentHashMap<String, VirtualFile?>()
+    private val maxDepth = 6
+    private val typeFileCache = ConcurrentHashMap<String, VirtualFile>()
     private val typeFieldsCache = ConcurrentHashMap<String, List<Pair<String, String>>>()
 
     fun build(endpoint: HttpEndpoint): EndpointStructurePreview {
@@ -129,12 +129,29 @@ class EndpointStructurePreviewService(private val project: Project) {
         if (depth >= maxDepth || isPrimitiveLike(type)) {
             return StructureNode(name = label, type = type)
         }
+
+        if (isCollectionType(type)) {
+            val elementType = parseTypeArguments(type).firstOrNull().orEmpty().ifBlank { "Any" }
+            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations)
+            return StructureNode(name = label, type = type, children = listOf(child))
+        }
+
+        if (isArrayType(type)) {
+            val elementType = parseTypeArguments(type).firstOrNull().orEmpty().ifBlank { "Any" }
+            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations)
+            return StructureNode(name = label, type = type, children = listOf(child))
+        }
+
+        if (isMapType(type)) {
+            return StructureNode(name = label, type = type)
+        }
+
         val short = shortType(type)
         if (!visited.add(short)) {
             return StructureNode(name = label, type = "$type (cycle)")
         }
 
-        val fields = readFieldsFromType(short, limitations)
+        val fields = readFieldsFromType(short, type, limitations)
         if (fields.isEmpty()) {
             return StructureNode(name = label, type = type)
         }
@@ -144,13 +161,25 @@ class EndpointStructurePreviewService(private val project: Project) {
         return StructureNode(name = label, type = type, children = children)
     }
 
-    private fun readFieldsFromType(type: String, limitations: MutableList<String>): List<Pair<String, String>> {
-        typeFieldsCache[type]?.let { return it }
-        val file = findTypeFile(type) ?: return emptyList()
+    private fun readFieldsFromType(typeName: String, typeSignature: String, limitations: MutableList<String>): List<Pair<String, String>> {
+        val file = findTypeFile(typeName) ?: return emptyList()
         val text = ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(file) }
+        val rawFields = typeFieldsCache[typeName] ?: extractRawFields(typeName, text, limitations).also {
+            typeFieldsCache[typeName] = it
+        }
+        if (rawFields.isEmpty()) return emptyList()
 
-        val javaRecord = Regex("""record\s+""" + Regex.escape(type) + """\s*\(([^)]*)\)""", RegexOption.DOT_MATCHES_ALL)
-            .find(text)?.groupValues?.getOrNull(1).orEmpty()
+        val typeParams = parseTypeParameters(typeName, text)
+        val typeArgs = parseTypeArguments(typeSignature)
+        if (typeParams.isEmpty() || typeArgs.isEmpty()) return rawFields
+        val genericMap = typeParams.zip(typeArgs).toMap()
+        return rawFields.map { (name, childType) ->
+            name to applyGenericMap(childType, genericMap)
+        }
+    }
+
+    private fun extractRawFields(typeName: String, text: String, limitations: MutableList<String>): List<Pair<String, String>> {
+        val javaRecord = extractRecordComponents(text, typeName).orEmpty()
         val javaRecordFields = splitTopLevel(javaRecord)
             .mapNotNull { token ->
                 val cleaned = token.trim().replace(Regex("""@\w+(?:\([^)]*\))?"""), " ").replace(Regex("""\s+"""), " ")
@@ -158,11 +187,10 @@ class EndpointStructurePreviewService(private val project: Project) {
                 m?.let { it.groupValues[2] to it.groupValues[1] }
             }
         if (javaRecordFields.isNotEmpty()) {
-            typeFieldsCache[type] = javaRecordFields
             return javaRecordFields
         }
 
-        val kotlinCtor = Regex("""(?:data\s+)?class\s+""" + Regex.escape(type) + """\s*\(([^)]*)\)""", RegexOption.DOT_MATCHES_ALL)
+        val kotlinCtor = Regex("""(?:data\s+)?class\s+""" + Regex.escape(typeName) + """\s*\(([^)]*)\)""", RegexOption.DOT_MATCHES_ALL)
             .find(text)?.groupValues?.getOrNull(1).orEmpty()
         val ctorFields = kotlinCtor.split(',')
             .mapNotNull { token ->
@@ -171,32 +199,104 @@ class EndpointStructurePreviewService(private val project: Project) {
                 m?.let { it.groupValues[1] to it.groupValues[2] }
             }
         if (ctorFields.isNotEmpty()) {
-            typeFieldsCache[type] = ctorFields
             return ctorFields
         }
 
         val kotlinBodyFields = Regex("""(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z0-9_<>\[\].?]+)""")
             .findAll(text).map { it.groupValues[1] to it.groupValues[2] }.toList()
         if (kotlinBodyFields.isNotEmpty()) {
-            val out = kotlinBodyFields.distinctBy { it.first }
-            typeFieldsCache[type] = out
-            return out
+            return kotlinBodyFields.distinctBy { it.first }
         }
 
-        val javaFields = Regex("""(?:private|protected|public)\s+([A-Za-z0-9_<>\[\].?]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;""")
+        val javaFields = Regex(
+            """(?:private|protected|public)\s+(?:static\s+|final\s+|transient\s+|volatile\s+)*([A-Za-z0-9_<>\[\].?]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^;]*)?;"""
+        )
             .findAll(text).map { it.groupValues[2] to it.groupValues[1] }.toList()
         if (javaFields.isNotEmpty()) {
-            typeFieldsCache[type] = javaFields
             return javaFields
         }
 
-        limitations += "Could not resolve fields for type $type"
-        typeFieldsCache[type] = emptyList()
+        limitations += "Could not resolve fields for type $typeName"
         return emptyList()
     }
 
+    private fun extractRecordComponents(text: String, typeName: String): String? {
+        val headerRegex = Regex("""\brecord\s+""" + Regex.escape(typeName) + """\b""")
+        val headerMatch = headerRegex.find(text) ?: return null
+        var i = headerMatch.range.last + 1
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length || text[i] != '(') return null
+
+        val start = i + 1
+        var depth = 1
+        var inString = false
+        var quote = '"'
+        var escape = false
+        i = start
+
+        while (i < text.length) {
+            val ch = text[i]
+            if (inString) {
+                if (escape) {
+                    escape = false
+                } else if (ch == '\\') {
+                    escape = true
+                } else if (ch == quote) {
+                    inString = false
+                }
+                i++
+                continue
+            }
+
+            when (ch) {
+                '"', '\'' -> {
+                    inString = true
+                    quote = ch
+                }
+                '(' -> depth++
+                ')' -> {
+                    depth--
+                    if (depth == 0) {
+                        return text.substring(start, i)
+                    }
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    private fun parseTypeParameters(typeName: String, text: String): List<String> {
+        val raw = Regex("""(?:class|record)\s+""" + Regex.escape(typeName) + """\s*<([^>]+)>""")
+            .find(text)?.groupValues?.getOrNull(1)
+            ?.trim()
+            .orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return splitTopLevel(raw).map { token ->
+            token.trim().substringBefore(':').substringBefore("extends").trim()
+        }.filter { it.isNotBlank() }
+    }
+
+    private fun parseTypeArguments(typeSignature: String): List<String> {
+        val start = typeSignature.indexOf('<')
+        val end = typeSignature.lastIndexOf('>')
+        if (start < 0 || end <= start) return emptyList()
+        val raw = typeSignature.substring(start + 1, end).trim()
+        if (raw.isBlank()) return emptyList()
+        return splitTopLevel(raw).map { it.trim() }.filter { it.isNotBlank() }
+    }
+
+    private fun applyGenericMap(type: String, genericMap: Map<String, String>): String {
+        var resolved = type
+        genericMap.forEach { (k, v) ->
+            resolved = resolved.replace(Regex("""\b""" + Regex.escape(k) + """\b"""), v)
+        }
+        return resolved
+    }
+
     private fun findTypeFile(type: String): VirtualFile? {
-        if (typeFileCache.containsKey(type)) return typeFileCache[type]
+        typeFileCache[type]?.let { return it }
+
         val candidates = setOf("$type.java", "$type.kt")
         val resolved = ReadAction.compute<VirtualFile?, RuntimeException> {
             var found: VirtualFile? = null
@@ -208,7 +308,9 @@ class EndpointStructurePreviewService(private val project: Project) {
             }
             found
         }
-        typeFileCache[type] = resolved
+        if (resolved != null) {
+            typeFileCache[type] = resolved
+        }
         return resolved
     }
 
@@ -235,29 +337,43 @@ class EndpointStructurePreviewService(private val project: Project) {
 
     private fun shortType(type: String): String {
         val unwrapped = unwrapCommonWrapper(type)
-        return unwrapped.substringAfterLast('.')
+        return unwrapped.substringBefore('<').substringAfterLast('.')
     }
 
     private fun unwrapCommonWrapper(type: String): String {
         val wrappers = listOf("ResponseEntity", "BaseResponse", "Mono", "Flux", "Optional")
         val raw = type.trim()
-        val short = raw.substringAfterLast('.')
+        val root = raw.substringBefore('<').substringAfterLast('.')
         wrappers.forEach { wrapper ->
-            if (short.startsWith("$wrapper<") && short.endsWith(">")) {
-                return short.substringAfter('<', short).substringBeforeLast('>')
+            if (root == wrapper && raw.contains('<') && raw.endsWith(">")) {
+                return raw.substringAfter('<').substringBeforeLast('>').trim()
             }
         }
-        return short
+        return raw
     }
 
     private fun isPrimitiveLike(type: String): Boolean {
         val t = type.substringAfterLast('.').removeSuffix("?")
-        if (t.startsWith("List<") || t.startsWith("Set<") || t.startsWith("Map<")) return true
         return t in setOf(
             "String", "Int", "Long", "Double", "Float", "Boolean", "Short", "Byte",
             "Integer", "Long", "Double", "Float", "Boolean", "BigDecimal", "LocalDate", "LocalDateTime",
             "void", "Unit"
         )
+    }
+
+    private fun isCollectionType(type: String): Boolean {
+        val short = type.substringAfterLast('.')
+        return short.startsWith("List<") || short.startsWith("Set<") || short.startsWith("Collection<")
+    }
+
+    private fun isArrayType(type: String): Boolean {
+        val short = type.substringAfterLast('.')
+        return short.startsWith("Array<")
+    }
+
+    private fun isMapType(type: String): Boolean {
+        val short = type.substringAfterLast('.')
+        return short.startsWith("Map<") || short == "Map"
     }
 
     private fun splitTopLevel(raw: String): List<String> {

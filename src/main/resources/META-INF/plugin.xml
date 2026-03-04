@@ -21,6 +21,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Endpoint Lens"
                     anchor="right"
+                    icon="/icons/endpointLensToolWindow.svg"
                     factoryClass="mingovvv.endpointlens.idea.ui.HttpPathsToolWindowFactory"/>
         <postStartupActivity implementation="mingovvv.endpointlens.idea.index.EndpointStartupActivity"/>
         <localInspection language="any"
@@ -36,6 +37,7 @@
     <actions>
         <action id="EndpointLens.OpenHttpPathsPopup"
                 class="mingovvv.endpointlens.idea.ui.OpenHttpPathsPopupAction"
+                icon="/icons/endpointLensToolWindow.svg"
                 text="Open Endpoint Lens Popup"
                 description="Open Endpoint Lens search popup">
             <add-to-group group-id="MainMenu" anchor="last"/>

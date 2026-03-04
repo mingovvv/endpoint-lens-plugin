@@ -49,9 +49,11 @@ class SpringMappingExtractor : HttpEndpointExtractor {
                 if (methodMapping != null) {
                     val fqn = if (pkg.isBlank()) className else "$pkg.$className"
                     val limitations = (classMapping.limitations + methodMapping.limitations).distinct()
+                    val responseType = runCatching { parseResponseType(lines, idx, methodName) }.getOrNull()
                     methods += EndpointComposer.compose(
                         controllerFqn = fqn,
                         methodName = methodName,
+                        responseType = responseType,
                         sourceFile = sourceFile,
                         line = idx + 1,
                         classMapping = classMapping,
@@ -89,23 +91,44 @@ class SpringMappingExtractor : HttpEndpointExtractor {
         }
 
         // Java method declarations are often split across lines.
-        val joined = buildString {
+        val joined = joinMethodDeclaration(lines, start)
+
+        METHOD_REGEX.find(joined)?.let { match ->
+            return match.groupValues.firstOrNull { it.isNotBlank() && it != match.value }
+        }
+        return METHOD_START_REGEX.find(single)?.groupValues?.getOrNull(1)
+    }
+
+    private fun parseResponseType(lines: List<String>, start: Int, methodName: String): String? {
+        val normalized = joinMethodDeclaration(lines, start).replace('\n', ' ').trim()
+        if (normalized.isBlank()) return null
+
+        val kotlin = Regex(
+            """fun\s+""" + Regex.escape(methodName) + """\s*\([^)]*\)\s*(?::\s*([A-Za-z0-9_<>\[\].?, ]+))?"""
+        ).find(normalized)?.groupValues?.getOrNull(1)?.trim()
+        if (!kotlin.isNullOrBlank()) return kotlin
+        if (normalized.contains("fun $methodName(") && kotlin.isNullOrBlank()) return "Unit"
+
+        val java = Regex(
+            """(?:public|protected|private|static|final|synchronized|abstract|default|native|strictfp|\s)+([A-Za-z0-9_<>\[\].?, ]+)\s+""" +
+                Regex.escape(methodName) + """\s*\("""
+        ).find(normalized)?.groupValues?.getOrNull(1)?.trim()
+        return java?.takeIf { it.isNotBlank() }
+    }
+
+    private fun joinMethodDeclaration(lines: List<String>, start: Int): String {
+        return buildString {
             var i = start
             var guard = 0
-            while (i < lines.size && guard < 12) {
+            while (i < lines.size && guard < 16) {
                 val part = lines[i].trim()
-                if (part.startsWith("@")) break
+                if (guard > 0 && part.startsWith("@")) break
                 append(part).append(' ')
                 if (part.contains("{") || part.endsWith(";")) break
                 i++
                 guard++
             }
         }.trim()
-
-        METHOD_REGEX.find(joined)?.let { match ->
-            return match.groupValues.firstOrNull { it.isNotBlank() && it != match.value }
-        }
-        return METHOD_START_REGEX.find(single)?.groupValues?.getOrNull(1)
     }
 
     private fun readAnnotation(lines: List<String>, start: Int): Pair<String, Int> {

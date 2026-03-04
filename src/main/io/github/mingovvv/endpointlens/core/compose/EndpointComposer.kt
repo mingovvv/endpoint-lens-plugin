@@ -9,6 +9,7 @@ object EndpointComposer {
     fun compose(
         controllerFqn: String,
         methodName: String,
+        responseType: String? = null,
         sourceFile: String,
         line: Int,
         classMapping: mingovvv.endpointlens.core.model.RawRequestMapping,
@@ -26,6 +27,7 @@ object EndpointComposer {
                     fullPath = path,
                     controllerFqn = controllerFqn,
                     methodName = methodName,
+                    responseType = responseType,
                     sourceFile = sourceFile,
                     line = line,
                     consumes = mergeConditions(classMapping.consumes, methodMapping.consumes),
@@ -69,4 +71,3 @@ object EndpointComposer {
         return if (override.isEmpty()) base.distinct() else (base + override).distinct()
     }
 }
-
