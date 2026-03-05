@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.github.mingovvv"
-version = "1.1.0"
+version = "1.1.1"
 
 repositories {
     mavenCentral()
@@ -39,9 +39,9 @@ intellijPlatform {
         version = project.version.toString()
 
         ideaVersion {
-            // 2024.2 (branch 242) to 2025.2 (branch 252)
+            // 2024.2 (branch 242) to infinity
             sinceBuild = "242"
-            untilBuild = "252.*"
+            untilBuild = "999.*"
         }
     }
 }

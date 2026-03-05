@@ -7,6 +7,14 @@
         It indexes controller endpoints, provides fast search/navigation, and warns about duplicate mappings before they cause runtime confusion.
     </description>
     <change-notes><![CDATA[
+      <p><b>1.1.1</b></p>
+      <ul>
+        <li>Improved generic type resolution — dynamically unwraps unknown wrapper types (Callable, CompletableFuture, etc.) without a hardcoded list.</li>
+        <li>Fixed generic record parsing (e.g. PageResponseDto&lt;T&gt;) that previously produced empty JSON.</li>
+        <li>Enum fields now render as "ENUM" instead of empty objects.</li>
+        <li>Date/time types (OffsetDateTime, ZonedDateTime, etc.) now display their type name instead of empty objects.</li>
+        <li>@Schema example values are used in JSON preview when available.</li>
+      </ul>
       <p><b>1.1.0</b></p>
       <ul>
         <li>Added Response JSON Structure preview panel — instantly see the response shape of any selected endpoint.</li>

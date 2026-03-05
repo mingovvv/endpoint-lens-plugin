@@ -5,8 +5,7 @@ import mingovvv.endpointlens.idea.preview.model.StructureNode
 object ResponseJsonExampleGenerator {
     fun generate(responseType: String?): String {
         val normalized = normalizeType(responseType)
-        val unwrapped = unwrapCommonWrapper(normalized)
-        return prettyPrintJson(buildJson(unwrapped, 0))
+        return prettyPrintJson(buildJson(normalized, 0))
     }
 
     fun generateFromNode(node: StructureNode?): String {
@@ -22,6 +21,8 @@ object ResponseJsonExampleGenerator {
             t.equals("void", ignoreCase = true) || t.equals("Unit", ignoreCase = true) || t.equals("Void", ignoreCase = true) ->
                 return "null"
             isStringLike(t) -> return "\"\""
+            isDateTimeLike(t) -> return "\"$t\""
+            isEnumLike(t) -> return "\"ENUM\""
             isBooleanLike(t) -> return "false"
             isIntegerLike(t) -> return "0"
             isFloatLike(t) -> return "0.0"
@@ -36,10 +37,15 @@ object ResponseJsonExampleGenerator {
                 val item = buildJson(elementType.ifBlank { "Any" }, depth + 1)
                 return "[\n  $item\n]"
             }
-            isEnumLike(t) -> return "\"VALUE\""
         }
 
-        // Fallback for complex/custom DTO type names.
+        // Dynamic unwrap: if the type has a generic argument, try resolving it
+        // instead of returning empty. Handles Callable<T>, ResponseEntity<T>, etc.
+        val typeArg = firstTypeArgument(t)
+        if (typeArg != null) {
+            return buildJson(typeArg, depth + 1)
+        }
+
         return "{}"
     }
 
@@ -62,7 +68,18 @@ object ResponseJsonExampleGenerator {
             }
             return "{\n$rendered\n}"
         }
+
+        // Use @Schema example if available
+        if (node.example != null) {
+            return formatExample(node.example, node.type)
+        }
         return buildJson(node.type, depth)
+    }
+
+    private fun formatExample(example: String, type: String): String {
+        if (isBooleanLike(type)) return example
+        if (isIntegerLike(type) || isFloatLike(type)) return example
+        return "\"$example\""
     }
 
     private fun prettyPrintJson(raw: String): String {
@@ -125,19 +142,6 @@ object ResponseJsonExampleGenerator {
             .replace("kotlin.", "")
             .replace("java.lang.", "")
             .replace("java.util.", "")
-    }
-
-    private fun unwrapCommonWrapper(type: String): String {
-        val wrappers = listOf(
-            "ResponseEntity", "HttpEntity", "Optional", "Mono", "Flux", "CompletableFuture",
-            "BaseResponse", "ApiResponse", "CommonResponse", "ResultResponse"
-        )
-        val raw = type.trim()
-        val genericRoot = raw.substringBefore('<').substringAfterLast('.')
-        if (genericRoot in wrappers) {
-            return firstTypeArgument(raw) ?: "Any"
-        }
-        return raw
     }
 
     private fun firstTypeArgument(type: String): String? {
@@ -231,9 +235,14 @@ object ResponseJsonExampleGenerator {
         val short = type.substringAfterLast('.')
         return short.startsWith("Map<") || short == "Map"
     }
-    private fun isStringLike(type: String): Boolean = type in setOf("String", "Char", "CharSequence", "UUID", "LocalDate", "LocalDateTime", "Instant")
+    private fun isStringLike(type: String): Boolean = type in setOf("String", "Char", "CharSequence", "UUID")
+    private fun isDateTimeLike(type: String): Boolean = type in setOf(
+        "LocalDate", "LocalDateTime", "LocalTime",
+        "OffsetDateTime", "OffsetTime", "ZonedDateTime",
+        "Instant", "Date", "Timestamp"
+    )
     private fun isBooleanLike(type: String): Boolean = type == "Boolean" || type == "boolean"
     private fun isIntegerLike(type: String): Boolean = type in setOf("Int", "Integer", "Long", "Short", "Byte", "BigInteger", "int", "long", "short", "byte")
     private fun isFloatLike(type: String): Boolean = type in setOf("Double", "Float", "BigDecimal", "double", "float")
-    private fun isEnumLike(type: String): Boolean = type.endsWith("Enum")
+    private fun isEnumLike(type: String): Boolean = type == "ENUM"
 }

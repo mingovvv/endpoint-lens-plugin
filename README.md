@@ -95,6 +95,12 @@ Or install manually:
 
 ## Changelog
 
+### 1.1.1
+- Dynamic generic wrapper unwrapping (no more hardcoded wrapper list).
+- Fixed generic record type parsing (e.g. `PageResponseDto<T>`).
+- Enum and date/time types now render correctly in JSON preview.
+- `@Schema(example = "...")` values are reflected in JSON preview.
+
 ### 1.1.0
 - Added **Response JSON Structure** preview panel.
 - Improved search UX with magnifier icon and clear button.
