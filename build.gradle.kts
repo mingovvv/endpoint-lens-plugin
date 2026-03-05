@@ -39,9 +39,8 @@ intellijPlatform {
         version = project.version.toString()
 
         ideaVersion {
-            // 2024.2 (branch 242) to infinity
             sinceBuild = "242"
-            untilBuild = "999.*"
+            untilBuild = provider { null }
         }
     }
 }
