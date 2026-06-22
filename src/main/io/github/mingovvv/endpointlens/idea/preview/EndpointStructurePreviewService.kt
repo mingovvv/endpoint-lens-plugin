@@ -18,13 +18,16 @@ class EndpointStructurePreviewService(private val project: Project) {
 
     fun build(endpoint: HttpEndpoint): EndpointStructurePreview {
         val limitations = mutableListOf<String>()
-        val methodBlock = readMethodBlock(endpoint, limitations)
+        val sourceText = loadSourceText(endpoint, limitations)
+        val methodBlock = sourceText?.let { readMethodBlock(it, endpoint) }
 
         val requestType = methodBlock?.let { extractRequestType(it, endpoint.methodName) }
         val responseType = methodBlock?.let { extractResponseType(it, endpoint.methodName) }
 
-        val requestNode = requestType?.let { resolveTypeTree("RequestBody", it, 0, mutableSetOf(), limitations) }
-        val responseNode = responseType?.let { resolveTypeTree("Response", it, 0, mutableSetOf(), limitations) }
+        // The controller source is the initial resolution context: a request/response type may
+        // itself be a type nested inside the controller file rather than a standalone file.
+        val requestNode = requestType?.let { resolveTypeTree("RequestBody", it, 0, mutableSetOf(), limitations, contextText = sourceText) }
+        val responseNode = responseType?.let { resolveTypeTree("Response", it, 0, mutableSetOf(), limitations, contextText = sourceText) }
 
         val confidence = when {
             limitations.isEmpty() -> EndpointConfidence.HIGH
@@ -39,14 +42,17 @@ class EndpointStructurePreviewService(private val project: Project) {
         )
     }
 
-    private fun readMethodBlock(endpoint: HttpEndpoint, limitations: MutableList<String>): String? {
+    private fun loadSourceText(endpoint: HttpEndpoint, limitations: MutableList<String>): String? {
         val file = ReadAction.compute<VirtualFile?, RuntimeException> {
             com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(endpoint.sourceFile)
         } ?: run {
             limitations += "Source file not found"
             return null
         }
-        val text = ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(file) }
+        return ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(file) }
+    }
+
+    private fun readMethodBlock(text: String, endpoint: HttpEndpoint): String {
         val lines = text.lines()
         val idx = (endpoint.line - 1).coerceIn(0, lines.lastIndex)
 
@@ -124,7 +130,8 @@ class EndpointStructurePreviewService(private val project: Project) {
         depth: Int,
         visited: MutableSet<String>,
         limitations: MutableList<String>,
-        example: String? = null
+        example: String? = null,
+        contextText: String? = null
     ): StructureNode {
         val type = normalizeTypeName(rawType)
         if (depth >= maxDepth || isPrimitiveLike(type)) {
@@ -133,13 +140,13 @@ class EndpointStructurePreviewService(private val project: Project) {
 
         if (isCollectionType(type)) {
             val elementType = parseTypeArguments(type).firstOrNull().orEmpty().ifBlank { "Any" }
-            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations)
+            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations, contextText = contextText)
             return StructureNode(name = label, type = type, children = listOf(child))
         }
 
         if (isArrayType(type)) {
             val elementType = parseTypeArguments(type).firstOrNull().orEmpty().ifBlank { "Any" }
-            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations)
+            val child = resolveTypeTree("item", elementType, depth + 1, visited.toMutableSet(), limitations, contextText = contextText)
             return StructureNode(name = label, type = type, children = listOf(child))
         }
 
@@ -152,36 +159,48 @@ class EndpointStructurePreviewService(private val project: Project) {
             return StructureNode(name = label, type = "$type (cycle)")
         }
 
-        val typeFile = findTypeFile(short)
-        if (typeFile != null) {
-            val text = ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(typeFile) }
-            if (isEnumDeclaration(text, short)) {
-                return StructureNode(name = label, type = "ENUM")
-            }
+        // Resolve the text that declares this type: a standalone file, or — if there is none —
+        // a type nested inside the current context file (e.g. a record/class declared in the
+        // same file as its parent or in the controller).
+        val declText = resolveDeclaringText(short, contextText)
+        if (declText != null && isEnumDeclaration(declText, short)) {
+            return StructureNode(name = label, type = "ENUM")
         }
 
-        val fields = readFieldsFromType(short, type, limitations)
+        val fields = if (declText == null) emptyList() else readFieldsFromType(short, type, declText, limitations)
         if (fields.isEmpty()) {
             // Dynamic unwrap: if the type has generic arguments but we can't find its source,
             // it's likely a framework/JDK wrapper — resolve the first type argument instead.
             val typeArgs = parseTypeArguments(type)
             if (typeArgs.isNotEmpty()) {
-                return resolveTypeTree(label, typeArgs.first(), depth, visited, limitations)
+                return resolveTypeTree(label, typeArgs.first(), depth, visited, limitations, contextText = contextText)
             }
             return StructureNode(name = label, type = type)
         }
+        // Children resolve against the file that declared this type, so further nesting works.
         val children = fields.map { (name, childType, childExample) ->
-            resolveTypeTree(name, childType, depth + 1, visited.toMutableSet(), limitations, childExample)
+            resolveTypeTree(name, childType, depth + 1, visited.toMutableSet(), limitations, childExample, contextText = declText)
         }
         return StructureNode(name = label, type = type, children = children)
     }
 
+    private fun resolveDeclaringText(short: String, contextText: String?): String? {
+        if (contextText != null && declaresType(contextText, short)) return contextText
+        val file = findTypeFile(short) ?: return null
+        return ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(file) }
+    }
+
+    private fun declaresType(text: String, typeName: String): Boolean {
+        return Regex("""\b(?:class|interface|record|enum)\s+""" + Regex.escape(typeName) + """\b""").containsMatchIn(text)
+    }
+
     // Returns Triple(fieldName, fieldType, schemaExample?)
-    private fun readFieldsFromType(typeName: String, typeSignature: String, limitations: MutableList<String>): List<Triple<String, String, String?>> {
-        val file = findTypeFile(typeName) ?: return emptyList()
-        val text = ReadAction.compute<String, RuntimeException> { VfsUtilCore.loadText(file) }
-        val rawFields = typeFieldsCache[typeName] ?: extractRawFields(typeName, text, limitations).also {
-            typeFieldsCache[typeName] = it
+    private fun readFieldsFromType(typeName: String, typeSignature: String, text: String, limitations: MutableList<String>): List<Triple<String, String, String?>> {
+        // Key includes the declaring text so a nested type does not collide with a same-named
+        // standalone type resolved from a different file.
+        val cacheKey = "$typeName#${text.hashCode()}"
+        val rawFields = typeFieldsCache[cacheKey] ?: extractRawFields(typeName, text, limitations).also {
+            typeFieldsCache[cacheKey] = it
         }
         if (rawFields.isEmpty()) return emptyList()
 
@@ -224,8 +243,12 @@ class EndpointStructurePreviewService(private val project: Project) {
             return ctorFields
         }
 
+        // Body-property fallbacks: scope to this type's own brace body, then drop nested brace
+        // groups (method bodies, nested types) so only this type's top-level fields remain.
+        val body = extractTypeBody(text, typeName)?.let { stripNestedBraces(it) } ?: ""
+
         val kotlinBodyFields = Regex("""(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z0-9_<>\[\].?]+)""")
-            .findAll(text).map { Triple(it.groupValues[1], it.groupValues[2], null as String?) }.toList()
+            .findAll(body).map { Triple(it.groupValues[1], it.groupValues[2], null as String?) }.toList()
         if (kotlinBodyFields.isNotEmpty()) {
             return kotlinBodyFields.distinctBy { it.first }
         }
@@ -233,13 +256,51 @@ class EndpointStructurePreviewService(private val project: Project) {
         val javaFields = Regex(
             """(?:private|protected|public)\s+(?:static\s+|final\s+|transient\s+|volatile\s+)*([A-Za-z0-9_<>\[\].?]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^;]*)?;"""
         )
-            .findAll(text).map { Triple(it.groupValues[2], it.groupValues[1], null as String?) }.toList()
+            .findAll(body).map { Triple(it.groupValues[2], it.groupValues[1], null as String?) }.toList()
         if (javaFields.isNotEmpty()) {
             return javaFields
         }
 
         limitations += "Could not resolve fields for type $typeName"
         return emptyList()
+    }
+
+    // The brace body of `typeName`'s declaration, or null if it has none (e.g. a bare record).
+    private fun extractTypeBody(text: String, typeName: String): String? {
+        val decl = Regex("""\b(?:class|interface|record|enum)\s+""" + Regex.escape(typeName) + """\b""")
+            .find(text) ?: return null
+        var i = decl.range.last + 1
+        while (i < text.length && text[i] != '{' && text[i] != ';') i++
+        if (i >= text.length || text[i] != '{') return null
+        val start = i + 1
+        var depth = 1
+        i = start
+        while (i < text.length) {
+            when (text[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(start, i)
+                }
+            }
+            i++
+        }
+        return text.substring(start)
+    }
+
+    // Removes everything inside nested `{...}` groups, keeping only top-level text. Used so a
+    // class body's field scan ignores method bodies and nested type declarations.
+    private fun stripNestedBraces(body: String): String {
+        val sb = StringBuilder()
+        var depth = 0
+        for (ch in body) {
+            when (ch) {
+                '{' -> depth++
+                '}' -> if (depth > 0) depth--
+                else -> if (depth == 0) sb.append(ch)
+            }
+        }
+        return sb.toString()
     }
 
     private fun extractRecordComponents(text: String, typeName: String): String? {

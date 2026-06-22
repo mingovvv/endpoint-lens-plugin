@@ -4,6 +4,8 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import mingovvv.endpointlens.idea.extractor.ProjectSourceScanner
+import mingovvv.endpointlens.idea.extractor.SourceFileEndpointExtractor
 
 class ProjectSourceScannerTest {
     @Test

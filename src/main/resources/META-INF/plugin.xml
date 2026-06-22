@@ -7,6 +7,15 @@
         It indexes controller endpoints, provides fast search/navigation, and warns about duplicate mappings before they cause runtime confusion.
     </description>
     <change-notes><![CDATA[
+      <p><b>1.2.0</b></p>
+      <ul>
+        <li>Added a Request JSON Structure preview — the detail panel now has Response JSON and Request JSON tabs.</li>
+        <li>Nested types now resolve in JSON previews: nested records/classes, enums, and types declared inside the same file (previously rendered as empty objects).</li>
+        <li>Search state (query + Method/Module/Controller filters) is now remembered when you reopen the popup and across IDE restarts.</li>
+        <li>Larger, resizable search popup that remembers your chosen size.</li>
+        <li>Low/medium-confidence mappings are marked with a small dot; hover to see why the static parse is only an estimate.</li>
+        <li>Refreshed tool window icon and added a "Copy request JSON example" action.</li>
+      </ul>
       <p><b>1.1.1</b></p>
       <ul>
         <li>Improved generic type resolution — dynamically unwraps unknown wrapper types (Callable, CompletableFuture, etc.) without a hardcoded list.</li>

@@ -2,6 +2,7 @@ package io.github.mingovvv.endpointlens.core.compose
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import mingovvv.endpointlens.core.compose.EndpointComposer
 import mingovvv.endpointlens.core.model.RawRequestMapping
 
 class EndpointComposerTest {

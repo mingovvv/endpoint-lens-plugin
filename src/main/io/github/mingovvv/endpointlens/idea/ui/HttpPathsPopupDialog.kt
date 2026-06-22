@@ -2,6 +2,7 @@ package mingovvv.endpointlens.idea.ui
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.util.ui.JBUI
 import java.awt.Dimension
 import javax.swing.JComponent
 
@@ -21,5 +22,9 @@ class HttpPathsPopupDialog(project: Project) : DialogWrapper(project) {
 
     override fun createActions() = emptyArray<javax.swing.Action>()
 
-    override fun getInitialSize(): Dimension = Dimension(820, 660)
+    // Persist the user-resized window size across reopen and IDE restarts.
+    override fun getDimensionServiceKey(): String = "EndpointLens.HttpPathsPopupDialog"
+
+    // DPI-aware initial size; larger default than before.
+    override fun getInitialSize(): Dimension = JBUI.size(1040, 760)
 }

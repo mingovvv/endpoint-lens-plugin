@@ -16,6 +16,7 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.SearchTextField
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
@@ -48,7 +49,10 @@ import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
 import javax.swing.plaf.basic.BasicSplitPaneUI
 import java.util.concurrent.atomic.AtomicInteger
+import javax.swing.ToolTipManager
 import mingovvv.endpointlens.core.index.DuplicateEndpointDetector
+import mingovvv.endpointlens.core.model.EndpointConfidence
+import mingovvv.endpointlens.core.model.HttpEndpoint
 import mingovvv.endpointlens.idea.index.EndpointIndexListener
 import mingovvv.endpointlens.idea.index.EndpointProjectIndexService
 import mingovvv.endpointlens.idea.index.IndexedEndpoint
@@ -59,12 +63,29 @@ import mingovvv.endpointlens.idea.search.EndpointSearchService
 
 class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     var onNavigate: (() -> Unit)? = null
-    private val searchField = SearchTextField(false)
+    private val searchField = object : SearchTextField(false) {
+        // By default SearchTextField swallows ESC to clear its text. That clear fires the
+        // document listener and overwrites the persisted query with "", so reopening looks
+        // reset. Let ESC pass through (preserving the query) so it just closes the dialog.
+        override fun preprocessEventForTextField(e: KeyEvent): Boolean {
+            if (e.keyCode == KeyEvent.VK_ESCAPE) return false
+            return super.preprocessEventForTextField(e)
+        }
+    }
     private val methodFilter = JComboBox<String>()
     private val moduleFilter = JComboBox<String>()
     private val controllerFilter = JComboBox<String>()
     private val listModel = DefaultListModel<IndexedEndpoint>()
-    private val resultList = JBList(listModel)
+    private val resultList = object : JBList<IndexedEndpoint>(listModel) {
+        override fun getToolTipText(event: MouseEvent): String? {
+            val index = locationToIndex(event.point)
+            if (index < 0) return null
+            val bounds = getCellBounds(index, index) ?: return null
+            if (!bounds.contains(event.point)) return null
+            val item = model.getElementAt(index) ?: return null
+            return confidenceTooltip(item.endpoint)
+        }
+    }
     private val statusLabel = JBLabel("Scanning…").also {
         it.horizontalAlignment = JLabel.RIGHT
         it.foreground = JBColor.GRAY
@@ -72,10 +93,13 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         it.border = JBUI.Borders.empty(4, 0, 6, 0)
     }
     private val responsePreviewArea = JTextArea()
+    private val requestPreviewArea = JTextArea()
+    private val previewPlaceholder = "{\n  \"select\": \"endpoint\"\n}"
 
     private val searchService = EndpointSearchService(project)
     private val indexService = EndpointProjectIndexService.getInstance(project)
     private val previewService = EndpointStructurePreviewService(project)
+    private val uiState = EndpointSearchUiState.getInstance(project)
     private var busConnection = project.messageBus.connect()
     private var disconnected = false
     private var suppressRefresh = false
@@ -87,6 +111,8 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         add(buildFiltersPanel(), BorderLayout.NORTH)
         add(buildCenterPanel(), BorderLayout.CENTER)
         setupList()
+        // Restore the last query before listeners are bound so no early refresh fires.
+        searchField.text = uiState.state.query
         refreshFilters()
         refreshResults()
         bindEvents()
@@ -157,6 +183,7 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         resultList.emptyText.text = "No endpoints found"
         resultList.fixedCellHeight = JBUI.scale(64)
         resultList.cellRenderer = EndpointCellRenderer()
+        ToolTipManager.sharedInstance().registerComponent(resultList)
         resultList.addListSelectionListener {
             if (!it.valueIsAdjusting) updateResponsePreview()
         }
@@ -193,28 +220,31 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun buildResponsePreviewPanel(): JPanel {
-        val panel = JPanel(BorderLayout(JBUI.scale(0), JBUI.scale(6)))
+        val panel = JPanel(BorderLayout())
         panel.border = JBUI.Borders.emptyTop(JBUI.scale(6))
 
-        val title = JBLabel("Response JSON Structure")
-        title.font = title.font.deriveFont(Font.BOLD)
-        title.border = JBUI.Borders.emptyLeft(2)
-        panel.add(title, BorderLayout.NORTH)
+        val tabs = JBTabbedPane()
+        // Response first so it stays the default focus — it's the more common interest.
+        tabs.addTab("Response JSON", buildPreviewScroll(responsePreviewArea, previewPlaceholder))
+        tabs.addTab("Request JSON", buildPreviewScroll(requestPreviewArea, previewPlaceholder))
 
-        responsePreviewArea.isEditable = false
-        responsePreviewArea.lineWrap = false
-        responsePreviewArea.wrapStyleWord = false
-        responsePreviewArea.font = Font(Font.MONOSPACED, Font.PLAIN, responsePreviewArea.font.size)
-        responsePreviewArea.text = "{\n  \"select\": \"endpoint\"\n}"
-        responsePreviewArea.border = JBUI.Borders.empty(6, 8)
-        responsePreviewArea.background = JBColor(Color(0xF8FAFC), Color(0x2F3136))
-
-        val previewScroll = JBScrollPane(responsePreviewArea)
-        previewScroll.preferredSize = JBUI.size(-1, 180)
-        previewScroll.border = JBUI.Borders.customLine(JBColor(Color(0xE5E7EB), Color(0x3A3D40)))
-
-        panel.add(previewScroll, BorderLayout.CENTER)
+        panel.add(tabs, BorderLayout.CENTER)
         return panel
+    }
+
+    private fun buildPreviewScroll(area: JTextArea, placeholder: String): JBScrollPane {
+        area.isEditable = false
+        area.lineWrap = false
+        area.wrapStyleWord = false
+        area.font = Font(Font.MONOSPACED, Font.PLAIN, area.font.size)
+        area.text = placeholder
+        area.border = JBUI.Borders.empty(6, 8)
+        area.background = JBColor(Color(0xF8FAFC), Color(0x2F3136))
+
+        val scroll = JBScrollPane(area)
+        scroll.preferredSize = JBUI.size(-1, 180)
+        scroll.border = JBUI.Borders.customLine(JBColor(Color(0xE5E7EB), Color(0x3A3D40)))
+        return scroll
     }
 
     private fun bindEvents() {
@@ -258,9 +288,10 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun refreshFilters() {
         suppressRefresh = true
         try {
-            val selectedMethod = methodFilter.selectedItem?.toString() ?: "ALL"
-            val selectedModule = moduleFilter.selectedItem?.toString() ?: "ALL"
-            val selectedController = controllerFilter.selectedItem?.toString() ?: "ALL"
+            // On first build selectedItem is null; fall back to the persisted selection.
+            val selectedMethod = methodFilter.selectedItem?.toString() ?: uiState.state.methodFilter
+            val selectedModule = moduleFilter.selectedItem?.toString() ?: uiState.state.moduleFilter
+            val selectedController = controllerFilter.selectedItem?.toString() ?: uiState.state.controllerFilter
 
             val methodItems = searchService.methods()
             val moduleItems = searchService.modules()
@@ -310,7 +341,17 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (resultList.selectedIndex < 0 && listModel.size > 0) {
             resultList.selectedIndex = 0
         }
+        persistState()
         updateResponsePreview()
+    }
+
+    private fun persistState() {
+        uiState.update(
+            query = searchField.text.orEmpty(),
+            methodFilter = methodFilter.selectedItem?.toString() ?: "ALL",
+            moduleFilter = moduleFilter.selectedItem?.toString() ?: "ALL",
+            controllerFilter = controllerFilter.selectedItem?.toString() ?: "ALL"
+        )
     }
 
     private fun navigateToSelected() {
@@ -358,6 +399,13 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         popup.add(copyResponseJson)
 
+        val requestText = requestPreviewArea.text
+        if (requestText.isNotBlank() && !requestText.startsWith("//")) {
+            val copyRequestJson = JMenuItem("Copy request JSON example")
+            copyRequestJson.addActionListener { copyToClipboard(requestText) }
+            popup.add(copyRequestJson)
+        }
+
         val showDuplicates = JMenuItem("Show duplicates")
         showDuplicates.addActionListener {
             val key = DuplicateEndpointDetector.keyOf(selected.endpoint)
@@ -381,29 +429,30 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun updateResponsePreview() {
         val selected = resultList.selectedValue
         if (selected == null) {
-            responsePreviewArea.text = "{\n  \"select\": \"endpoint\"\n}"
+            responsePreviewArea.text = previewPlaceholder
+            requestPreviewArea.text = previewPlaceholder
             return
         }
 
         val ticket = previewRequestSeq.incrementAndGet()
         responsePreviewArea.text = ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
+        requestPreviewArea.text = "// resolving…"
 
         AppExecutorUtil.getAppExecutorService().submit {
-            val generated = runCatching {
-                val preview = previewService.build(selected.endpoint)
-                if (preview.response != null) {
-                    ResponseJsonExampleGenerator.generateFromNode(preview.response)
-                } else {
-                    ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
-                }
-            }.getOrElse {
+            val preview = runCatching { previewService.build(selected.endpoint) }.getOrNull()
+            val responseJson = if (preview?.response != null) {
+                ResponseJsonExampleGenerator.generateFromNode(preview.response)
+            } else {
                 ResponseJsonExampleGenerator.generate(selected.endpoint.responseType)
             }
+            val requestJson = preview?.request?.let { ResponseJsonExampleGenerator.generateFromNode(it) }
 
             ApplicationManager.getApplication().invokeLater({
                 if (ticket != previewRequestSeq.get()) return@invokeLater
-                responsePreviewArea.text = generated
+                responsePreviewArea.text = responseJson
                 responsePreviewArea.caretPosition = 0
+                requestPreviewArea.text = requestJson ?: "// no request body"
+                requestPreviewArea.caretPosition = 0
             }, ModalityState.any())
         }
     }
@@ -411,6 +460,18 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun displaySource(sourceFile: String, line: Int): String {
         val filename = sourceFile.replace('\\', '/').substringAfterLast('/')
         return "$filename:$line"
+    }
+
+    // HIGH-confidence endpoints get no tooltip (clean). For MEDIUM/LOW we explain why the
+    // static parse is only an estimate so the result can be trusted accordingly.
+    private fun confidenceTooltip(endpoint: HttpEndpoint): String? {
+        if (endpoint.confidence == EndpointConfidence.HIGH) return null
+        val header = when (endpoint.confidence) {
+            EndpointConfidence.LOW -> "Low confidence — this mapping is a best-effort estimate"
+            else -> "Medium confidence — some details could not be fully resolved"
+        }
+        val body = endpoint.limitations.distinct().joinToString("") { "<br>&nbsp;&bull; $it" }
+        return "<html>$header$body</html>"
     }
 
     fun preferredFocusComponent() = searchField.textEditor
@@ -471,10 +532,13 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
         private val metaPanel = JPanel(BorderLayout(JBUI.scale(6), 0))
         private val methodLabel = JLabel()
         private val pathText = SimpleColoredComponent()
+        private val confidenceDot = JLabel()
         private val responseText = SimpleColoredComponent()
         private val locationText = SimpleColoredComponent()
         private val boldFont: Font
         private val smallFont: Font
+        private val confidenceMedium = JBColor(Color(0xB8860B), Color(0xD4A24C))
+        private val confidenceLow = JBColor(Color(0xC0392B), Color(0xE57373))
 
         init {
             val base = methodLabel.font
@@ -485,11 +549,13 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             pathText.font = base
             responseText.font = smallFont
             locationText.font = smallFont
+            confidenceDot.font = base.deriveFont(base.size2D - 2f)
 
             topPanel.isOpaque = false
             metaPanel.isOpaque = false
             topPanel.add(methodLabel)
             topPanel.add(pathText)
+            topPanel.add(confidenceDot)
             metaPanel.add(responseText, BorderLayout.WEST)
             metaPanel.add(locationText, BorderLayout.EAST)
 
@@ -511,6 +577,7 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
             if (value == null) {
                 methodLabel.text = ""
                 pathText.clear()
+                confidenceDot.text = ""
                 responseText.clear()
                 locationText.clear()
                 return outerPanel
@@ -539,6 +606,19 @@ class HttpPathsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
             pathText.clear()
             appendHighlighted(pathText, value.endpoint.fullPath, highlightTokens, normalPath, highlightPath)
+
+            // Subtle confidence marker: only shown when the static parse is uncertain.
+            when (value.endpoint.confidence) {
+                EndpointConfidence.HIGH -> confidenceDot.text = ""
+                EndpointConfidence.MEDIUM -> {
+                    confidenceDot.text = "●"
+                    confidenceDot.foreground = if (isSelected) list.selectionForeground else confidenceMedium
+                }
+                EndpointConfidence.LOW -> {
+                    confidenceDot.text = "●"
+                    confidenceDot.foreground = if (isSelected) list.selectionForeground else confidenceLow
+                }
+            }
 
             val responsePrefixAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, locationColor)
             val responseValueAttr = if (isSelected) {

@@ -2,6 +2,7 @@ package io.github.mingovvv.endpointlens.core.index
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import mingovvv.endpointlens.core.index.DuplicateEndpointDetector
 import mingovvv.endpointlens.core.model.HttpEndpoint
 
 class DuplicateEndpointDetectorTest {

@@ -8,17 +8,8 @@ bin/
 ### IntelliJ Platform Gradle Plugin ###
 .intellijPlatform/
 
-### IntelliJ IDEA (project-local only) ###
-.idea/*
-!.idea/.gitignore
-!.idea/codeStyles/
-!.idea/runConfigurations/
-
-### IntelliJ user-local files ###
-.idea/workspace.xml
-.idea/tasks.xml
-.idea/shelf/
-.idea/httpRequests/
+### IntelliJ IDEA (ignore the whole project-local config) ###
+.idea/
 
 ### IDE metadata ###
 *.iws
@@ -38,9 +29,16 @@ replay_pid*
 !.env.example
 local.properties
 
-### VS Code ###
-.vscode/
+### Plugin signing keys & certificates — never commit ###
+*.pem
+*.p12
+*.pfx
+*.key
+*.jks
+*.keystore
+*.crt
 
-### OS ###
+### OS / editor ###
+.vscode/
 .DS_Store
 Thumbs.db

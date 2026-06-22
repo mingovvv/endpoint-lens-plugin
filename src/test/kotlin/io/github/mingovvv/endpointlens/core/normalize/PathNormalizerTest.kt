@@ -2,6 +2,7 @@ package io.github.mingovvv.endpointlens.core.normalize
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import mingovvv.endpointlens.core.normalize.PathNormalizer
 
 class PathNormalizerTest {
     @Test

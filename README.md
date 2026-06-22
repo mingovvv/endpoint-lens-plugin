@@ -15,10 +15,15 @@
 - Supports partial path matching, HTTP method prefix (e.g. `GET /users`), and free-text queries.
 - Double-click or press `Enter` to jump directly to the controller method in source code.
 
-### Response JSON Structure Preview
-- Select any endpoint and see an auto-generated JSON structure preview based on the method's return type.
+### Request & Response JSON Structure Preview
+- Select any endpoint and see an auto-generated JSON structure preview in dedicated **Response JSON** and **Request JSON** tabs.
 - Deeply resolves nested objects, collections, generics (`ResponseEntity<T>`, `Page<T>`, etc.) into a human-readable JSON shape.
+- Resolves nested records/classes, enums, and types declared inside the same file — not just standalone top-level types.
 - Powered by static analysis — no server required.
+
+### Remembered Search State
+- Your search query and Method / Module / Controller filters are restored when you reopen the popup — and persist across IDE restarts.
+- The search popup is resizable and remembers the size you set.
 
 ### Smart Filtering
 - Filter endpoints by **HTTP method** (GET, POST, PUT, PATCH, DELETE).
@@ -70,6 +75,7 @@ Or install manually:
 | Copy endpoint path | Right-click → **Copy endpoint** |
 | Copy curl template | Right-click → **Copy curl template** |
 | Copy response JSON | Right-click → **Copy response JSON example** |
+| Copy request JSON | Right-click → **Copy request JSON example** |
 | Check duplicates | Right-click → **Show duplicates** |
 
 ---
@@ -94,6 +100,14 @@ Or install manually:
 ---
 
 ## Changelog
+
+### 1.2.0
+- Added **Request JSON Structure** preview — the detail panel now has **Response JSON** and **Request JSON** tabs.
+- Nested types now resolve in JSON previews: nested records/classes, enums, and types declared inside the same file (previously rendered as empty objects).
+- Search state (query + Method/Module/Controller filters) is remembered when reopening the popup and across IDE restarts.
+- Larger, resizable search popup that remembers your chosen size.
+- Low/medium-confidence mappings are marked with a small dot; hover for why the static parse is only an estimate.
+- Refreshed tool window icon and added a **Copy request JSON example** action.
 
 ### 1.1.1
 - Dynamic generic wrapper unwrapping (no more hardcoded wrapper list).
